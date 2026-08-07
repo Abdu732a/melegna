@@ -1,49 +1,42 @@
 import * as SQLite from 'expo-sqlite';
 
-let dbInstance: SQLite.SQLiteDatabase | null = null;
+const db = SQLite.openDatabaseSync('melegna_pos.db');
 
-export async function getLocalDatabase(): Promise<SQLite.SQLiteDatabase> {
-    if (dbInstance) return dbInstance;
+export const initLocalDB = () => {
+  db.execSync(`
+        PRAGMA journal_mode = WAL;
 
-    dbInstance = await SQLite.openDatabaseAsync('cafe_pos_offline.db');
+        CREATE TABLE IF NOT EXISTS local_users (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            role TEXT NOT NULL,
+            pinCodeHash TEXT NOT NULL,
+            isActive INTEGER DEFAULT 1
+        );
 
-    // Enable WAL mode for crash-proof local writes
-    await dbInstance.execAsync(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA foreign_keys = ON;
+        CREATE TABLE IF NOT EXISTS local_menu (
+            id TEXT PRIMARY KEY,
+            nameAmharic TEXT NOT NULL,
+            nameEnglish TEXT NOT NULL,
+            category TEXT NOT NULL,
+            price REAL NOT NULL,
+            imageUrl TEXT,
+            isAvailable INTEGER DEFAULT 1
+        );
 
-    CREATE TABLE IF NOT EXISTS orders (
-      client_order_id TEXT PRIMARY KEY NOT NULL,
-      status TEXT NOT NULL, -- CREATED, PENDING_PRINT, PRINTED, PENDING_SYNC, SYNCED
-      total_amount REAL NOT NULL,
-      items_json TEXT NOT NULL,
-      created_at INTEGER NOT NULL
-    );
+        CREATE TABLE IF NOT EXISTS local_orders (
+            clientOrderId TEXT PRIMARY KEY,
+            tableNumber TEXT NOT NULL,
+            waiterId TEXT NOT NULL,
+            items TEXT NOT NULL, -- Stored as JSON string
+            totalAmount REAL NOT NULL,
+            status TEXT DEFAULT 'SUBMITTED',
+            isPaid INTEGER DEFAULT 0,
+            paymentMethod TEXT DEFAULT 'NONE',
+            synced INTEGER DEFAULT 0 -- 0 = Pending sync to backend, 1 = Synced
+        );
+    `);
+  console.log('📦 Local SQLite database initialized successfully.');
+};
 
-    CREATE TABLE IF NOT EXISTS sync_queue (
-      id TEXT PRIMARY KEY NOT NULL,
-      client_order_id TEXT UNIQUE NOT NULL,
-      payload TEXT NOT NULL,
-      sync_status TEXT NOT NULL, -- PENDING, IN_PROGRESS, FAILED, SYNCED
-      retry_count INTEGER DEFAULT 0,
-      last_attempt INTEGER DEFAULT 0,
-      created_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS print_queue (
-      id TEXT PRIMARY KEY NOT NULL,
-      client_order_id TEXT NOT NULL,
-      raw_esc_pos TEXT NOT NULL,
-      print_status TEXT NOT NULL, -- PENDING, PRINTING, PRINTED, FAILED
-      retry_count INTEGER DEFAULT 0,
-      created_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY NOT NULL,
-      value TEXT NOT NULL
-    );
-  `);
-
-    return dbInstance;
-}
+export default db;

@@ -1,47 +1,35 @@
 import TcpSocket from 'react-native-tcp-socket';
-import { getLocalDatabase } from '../database/sqlite';
 
-export interface PrinterConfig {
-    type: 'LAN' | 'USB';
-    ipAddress?: string;
-    port?: number;
-}
+// Standard ESC/POS commands formatting for thermal printers
+export const printKitchenReceipt = (printerIp: string, printerPort: number, orderDetails: any) => {
+    const client = TcpSocket.createConnection({
+        host: printerIp,
+        port: printerPort || 9100, // Standard raw printing port
+    }, () => {
+        // ESC/POS Byte commands
+        const ESC = '\x1B';
+        const INIT = `${ESC}@`;
+        const CENTER = `${ESC}a\x01`;
+        const LEFT = `${ESC}a\x00`;
+        const CUT = '\x1D\x56\x41\x10';
 
-export class ClientPrinterService {
-    public static async printRawReceipt(rawData: string): Promise<boolean> {
-        const db = await getLocalDatabase();
-        const configRow = await db.getFirstAsync<{ value: string }>(
-            'SELECT value FROM settings WHERE key = ?',
-            ['printer_config']
-        );
+        let printData = `${INIT}${CENTER}=== KITCHEN ORDER ===\n`;
+        printData += `Table: ${orderDetails.tableNumber}\n`;
+        printData += `Order ID: ${orderDetails.clientOrderId}\n`;
+        printData += `--------------------------------\n${LEFT}`;
 
-        if (!configRow) {
-            throw new Error('PrinterNotConfigured: Set printer IP in settings.');
+        for (const item of orderDetails.items) {
+            printData += `${item.quantity}x ${item.name}\n`;
+            if (item.notes) printData += `   Note: ${item.notes}\n`;
         }
 
-        const config: PrinterConfig = JSON.parse(configRow.value);
+        printData += `--------------------------------\n\n${CUT}`;
 
-        if (config.type === 'LAN') {
-            return new Promise((resolve, reject) => {
-                const client = TcpSocket.createConnection(
-                    { host: config.ipAddress, port: config.port || 9100, timeout: 4000 },
-                    () => {
-                        client.write(rawData, 'utf8', () => {
-                            client.destroy();
-                            resolve(true);
-                        });
-                    }
-                );
+        client.write(printData);
+        client.end();
+    });
 
-                client.on('error', (err) => {
-                    client.destroy();
-                    reject(err);
-                });
-            }
-            );
-        }
-
-        // Default fallback
-        return false;
-    }
-}
+    client.on('error', (error) => {
+        console.error('Local printer connection error:', error);
+    });
+};

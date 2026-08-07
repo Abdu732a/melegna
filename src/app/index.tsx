@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -14,7 +14,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 
 const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL || 'http://192.168.43.7:5000';
+  process.env.EXPO_PUBLIC_API_BASE_URL;
 
 const STORAGE_KEY = '@staff_list_cache';
 
@@ -22,6 +22,7 @@ export default function LoginScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
   const isTablet = width >= 768;
+  const isMounted = useRef(true);
 
   const [staffList, setStaffList] = useState<any[]>([]);
   const [selectedUser, setSelectedUser] = useState<any>(null);
@@ -31,7 +32,11 @@ export default function LoginScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
+    isMounted.current = true;
     checkExistingSession();
+    return () => {
+      isMounted.current = false;
+    };
   }, []);
 
   const checkExistingSession = async () => {
@@ -41,15 +46,15 @@ export default function LoginScreen() {
       if (token && userStr) {
         const user = JSON.parse(userStr);
         if (user._id || user.id) {
-          router.replace('/Home' as any);
+          // Expo router is case-sensitive and relies on filename
+          router.replace('/home');
           return;
         }
       }
     } catch (e) {
       console.error('Session check failed:', e);
-    } finally {
-      loadStaffData();
     }
+    loadStaffData();
   };
 
   const loadStaffData = async () => {
@@ -57,9 +62,11 @@ export default function LoginScreen() {
       const cachedData = await AsyncStorage.getItem(STORAGE_KEY);
       if (cachedData !== null) {
         const parsed = JSON.parse(cachedData);
-        setStaffList(parsed);
-        if (parsed.length > 0) setSelectedUser(parsed[0]);
-        setLoading(false);
+        if (isMounted.current) {
+          setStaffList(parsed);
+          if (parsed.length > 0) setSelectedUser(parsed[0]);
+          setLoading(false);
+        }
       }
     } catch (e) {
       console.error('Error reading local cache:', e);
@@ -68,26 +75,39 @@ export default function LoginScreen() {
   };
 
   const syncStaffFromDB = async () => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+
     try {
-      const response = await fetch(`${API_BASE_URL}/api/auth/staff`);
+      const response = await fetch(`${API_BASE_URL}/api/auth/staff`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
       const data = await response.json();
 
       if (response.ok && Array.isArray(data)) {
         await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-        setStaffList(data);
-        if (data.length > 0 && !selectedUser) {
-          setSelectedUser(data[0]);
+        if (isMounted.current) {
+          setStaffList(data);
+          if (data.length > 0 && !selectedUser) {
+            setSelectedUser(data[0]);
+          }
         }
       }
     } catch (error) {
-      console.log('Operating in offline mode.');
+      console.log('Operating in offline mode or request timed out.');
     } finally {
-      setLoading(false);
+      if (isMounted.current) {
+        setLoading(false);
+      }
     }
   };
 
   const handleKeyPress = (val: string) => {
+    if (verifying) return;
     setErrorMessage(null);
+
     if (val === 'DEL') {
       setPin((prev) => prev.slice(0, -1));
     } else if (val === 'CLR') {
@@ -104,10 +124,16 @@ export default function LoginScreen() {
   };
 
   const verifyPinCode = async (enteredPin: string) => {
+    if (verifying) return;
     if (!selectedUser) {
       setErrorMessage('Please select a staff member first');
       return;
     }
+
+    // Add AbortController for PIN verification to prevent endless loading 
+    // if the server is unreachable.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
 
     try {
       setVerifying(true);
@@ -117,16 +143,18 @@ export default function LoginScreen() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          userId: selectedUser._id,
+          userId: selectedUser._id || selectedUser.id,
           pinCode: enteredPin,
         }),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
 
       const result = await response.json();
 
       if (response.ok) {
         const sessionUser = {
-          _id: selectedUser._id,
+          _id: selectedUser._id || selectedUser.id,
           name: selectedUser.name,
           role: selectedUser.role || 'waiter',
         };
@@ -134,17 +162,27 @@ export default function LoginScreen() {
         await AsyncStorage.setItem('@auth_token', result.token || 'auth_active');
         await AsyncStorage.setItem('@logged_in_user', JSON.stringify(sessionUser));
 
-        setPin('');
-        router.replace('/Home' as any);
+        if (isMounted.current) {
+          setPin('');
+          setVerifying(false);
+        }
+
+        // Ensure route strictly matches filename casing
+        router.replace('/home');
       } else {
-        setErrorMessage(result.error || 'Invalid PIN code');
-        setPin('');
+        if (isMounted.current) {
+          setErrorMessage(result.error || 'Invalid PIN code');
+          setPin('');
+          setVerifying(false);
+        }
       }
     } catch (error) {
-      setErrorMessage('Authentication request failed. Check network connection.');
-      setPin('');
-    } finally {
-      setVerifying(false);
+      clearTimeout(timeoutId);
+      if (isMounted.current) {
+        setErrorMessage('Authentication request failed. Check network connection.');
+        setPin('');
+        setVerifying(false);
+      }
     }
   };
 
@@ -169,10 +207,10 @@ export default function LoginScreen() {
               <FlatList
                 horizontal
                 data={staffList}
-                keyExtractor={(item) => item._id}
+                keyExtractor={(item) => item._id || item.id}
                 showsHorizontalScrollIndicator={false}
                 renderItem={({ item }) => {
-                  const isSelected = selectedUser?._id === item._id;
+                  const isSelected = (selectedUser?._id || selectedUser?.id) === (item._id || item.id);
                   return (
                     <TouchableOpacity
                       activeOpacity={0.7}

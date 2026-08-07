@@ -14,9 +14,12 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
-import { getLocalDatabase } from '../database/sqlite';
-import { triggerSyncEngine } from '../services/syncEngine';
-import { ClientPrinterService } from '../services/printerService';
+import getLocalDatabase from '../database/sqlite';
+import { triggerSyncEngine } from '../database/syncEngine';
+import { ClientPrinterService } from '../database/printerService';
+
+const API_BASE_URL =
+    process.env.EXPO_PUBLIC_API_BASE_URL || 'http://192.168.43.7:5000';
 
 const generateUUID = () => {
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
@@ -108,30 +111,46 @@ export default function CheckoutScreen() {
         rawReceipt += `--------------------------------\nTotal: ${subtotal} ETB\n\n\n\x1D\x56\x00`;
 
         try {
-            // Web ና Native Platform መለየያ (Web ላይ SQLite በቀጥታ የማይሰራ ከሆነ Safe Fallback እንዲኖረው)
+            // Retrieve JWT Auth token
+            const token = await AsyncStorage.getItem('@auth_token');
+
+            // DIRECT MONGODB API POST with JWT Bearer Header
+            const apiRes = await fetch(`${API_BASE_URL}/api/orders`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify(orderPayload),
+            });
+
+            if (!apiRes.ok) {
+                const errData = await apiRes.json();
+                console.warn('Direct API Order creation warning:', errData);
+            }
+
+            // Native SQLite queuing fallback for iOS / Android offline mode
             if (Platform.OS !== 'web') {
-                const db = await getLocalDatabase();
-                await db.execAsync('BEGIN IMMEDIATE;');
+                try {
+                    const db = await getLocalDatabase();
+                    await db.execAsync('BEGIN IMMEDIATE;');
 
-                await db.runAsync(
-                    `INSERT INTO orders (client_order_id, status, total_amount, items_json, created_at)
-                     VALUES (?, ?, ?, ?, ?)`,
-                    [clientOrderId, 'PENDING_PRINT', subtotal, JSON.stringify(formattedItems), now]
-                );
+                    await db.runAsync(
+                        `INSERT INTO orders (client_order_id, status, total_amount, items_json, created_at)
+                         VALUES (?, ?, ?, ?, ?)`,
+                        [clientOrderId, 'SUBMITTED', subtotal, JSON.stringify(formattedItems), now]
+                    );
 
-                await db.runAsync(
-                    `INSERT INTO print_queue (id, client_order_id, raw_esc_pos, print_status, retry_count, created_at)
-                     VALUES (?, ?, ?, ?, 0, ?)`,
-                    [`PRN-${clientOrderId}`, clientOrderId, rawReceipt, 'PENDING', now]
-                );
+                    await db.runAsync(
+                        `INSERT INTO print_queue (id, client_order_id, raw_esc_pos, print_status, retry_count, created_at)
+                         VALUES (?, ?, ?, ?, 0, ?)`,
+                        [`PRN-${clientOrderId}`, clientOrderId, rawReceipt, 'PENDING', now]
+                    );
 
-                await db.runAsync(
-                    `INSERT INTO sync_queue (id, client_order_id, payload, sync_status, retry_count, last_attempt, created_at)
-                     VALUES (?, ?, ?, ?, 0, 0, ?)`,
-                    [`SYNC-${clientOrderId}`, clientOrderId, JSON.stringify(orderPayload), 'PENDING', now]
-                );
-
-                await db.execAsync('COMMIT;');
+                    await db.execAsync('COMMIT;');
+                } catch (sqliteErr) {
+                    console.log('SQLite store error (operating online mode):', sqliteErr);
+                }
             }
 
             // 1. Clear cart
@@ -143,12 +162,12 @@ export default function CheckoutScreen() {
                 lang === 'am' ? '✅ ትእዛዙ በስኬት ተመዝግቧል!' : '✅ Order placed successfully!'
             );
 
-            // 3. Optional print & sync
+            // 3. Optional print trigger & background sync
             ClientPrinterService.printRawReceipt(rawReceipt).catch(() => { });
             triggerSyncEngine();
 
-            // 4. Redirect to Home
-            router.replace('/Home' as any);
+            // 4. Redirect back to Home screen
+            router.replace('/home' as any);
         } catch (error: any) {
             console.error('Order process error:', error);
             Alert.alert(
@@ -255,9 +274,14 @@ export default function CheckoutScreen() {
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#F5F6FA' },
     topHeader: {
-        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-        paddingHorizontal: 20, paddingVertical: 14, backgroundColor: '#FFFFFF',
-        borderBottomWidth: 1, borderBottomColor: '#EAEAEF',
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: 20,
+        paddingVertical: 14,
+        backgroundColor: '#FFFFFF',
+        borderBottomWidth: 1,
+        borderBottomColor: '#EAEAEF',
     },
     backBtn: { backgroundColor: '#F0F2F5', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6 },
     backBtnText: { fontSize: 13, fontWeight: '700', color: '#1A1D26' },

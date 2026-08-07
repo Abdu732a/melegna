@@ -11,13 +11,12 @@ import {
     ActivityIndicator,
     TextInput,
     useWindowDimensions,
-    Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 
 const API_BASE_URL =
-    process.env.EXPO_PUBLIC_API_BASE_URL || 'http://192.168.43.7:5000';
+    process.env.EXPO_PUBLIC_API_BASE_URL;
 
 const MENU_CACHE_KEY = '@pos_menu_items_cache';
 
@@ -92,13 +91,8 @@ export default function TabletHomeScreen() {
             const data = await res.json();
 
             if (res.ok && Array.isArray(data)) {
-                const jsonStr = JSON.stringify(data);
-                const currentCache = await AsyncStorage.getItem(MENU_CACHE_KEY);
-
-                if (currentCache !== jsonStr) {
-                    await AsyncStorage.setItem(MENU_CACHE_KEY, jsonStr);
-                    setMenuItems(data);
-                }
+                await AsyncStorage.setItem(MENU_CACHE_KEY, JSON.stringify(data));
+                setMenuItems(data);
             }
         } catch (err) {
             console.log('Operating offline. Using local cached menu.');
@@ -124,11 +118,18 @@ export default function TabletHomeScreen() {
         });
     };
 
+    // LOGOUT / LOCK SCREEN HANDLER
     const handleLockScreen = async () => {
-        setCart({});
-        await AsyncStorage.removeItem('@active_cart');
-        await AsyncStorage.removeItem('@logged_in_user');
-        router.replace('/');
+        try {
+            setCart({});
+            setActiveWaiter(null);
+            await AsyncStorage.multiRemove(['@active_cart', '@logged_in_user', '@auth_token']);
+
+            router.replace('/');
+        } catch (error) {
+            console.error('Logout error:', error);
+            router.replace('/');
+        }
     };
 
     const filteredItems = menuItems.filter((item) => {
@@ -162,7 +163,6 @@ export default function TabletHomeScreen() {
         <SafeAreaView style={styles.container}>
             <StatusBar barStyle="dark-content" backgroundColor="#F5F6FA" />
 
-            {/* Custom Toast Message Banner */}
             {toastMessage && (
                 <View style={styles.toastContainer}>
                     <Text style={styles.toastText}>{toastMessage}</Text>
@@ -202,13 +202,12 @@ export default function TabletHomeScreen() {
                         style={styles.lockBtn}
                         onPress={handleLockScreen}
                     >
-                        <Text style={styles.lockBtnText}>{lang === 'am' ? 'ዝጋ' : 'LOCK'}</Text>
+                        <Text style={styles.lockBtnText}>{lang === 'am' ? 'ዝጋ (LOGOUT)' : 'LOGOUT'}</Text>
                     </TouchableOpacity>
                 </View>
             </View>
 
             <View style={styles.mainBody}>
-                {/* MENU CATALOG (LEFT PANEL) */}
                 <View style={styles.leftPanel}>
                     <View style={styles.categoryRow}>
                         {CATEGORIES.map((cat) => {
@@ -271,7 +270,6 @@ export default function TabletHomeScreen() {
                     )}
                 </View>
 
-                {/* SIDE CART SUMMARY PANEL */}
                 <View style={styles.rightPanel}>
                     <Text style={styles.orderHeader}>
                         {lang === 'am' ? 'የትእዛዝ ዝርዝር (Cart)' : 'Order Cart'}
@@ -338,7 +336,7 @@ const styles = StyleSheet.create({
     toastContainer: {
         position: 'absolute', top: 15, alignSelf: 'center', zIndex: 9999,
         backgroundColor: '#00C896', paddingHorizontal: 20, paddingVertical: 10,
-        borderRadius: 25, elevation: 5, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 4,
+        borderRadius: 25, elevation: 5,
     },
     toastText: { color: '#FFFFFF', fontWeight: '800', fontSize: 14 },
     topHeader: {
