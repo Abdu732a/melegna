@@ -10,16 +10,12 @@ import {
     TextInput,
     ActivityIndicator,
     Alert,
-    Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
-import getLocalDatabase from '../database/sqlite';
+import { createLocalOrder } from '../database/orderRepository';
 import { triggerSyncEngine } from '../database/syncEngine';
 import { ClientPrinterService } from '../database/printerService';
-
-const API_BASE_URL =
-    process.env.EXPO_PUBLIC_API_BASE_URL || 'http://192.168.43.7:5000';
 
 const generateUUID = () => {
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
@@ -82,94 +78,55 @@ export default function CheckoutScreen() {
         setSubmitting(true);
 
         const clientOrderId = generateUUID();
-        const now = Date.now();
         const formattedTable = tableNumber.trim()
             ? tableNumber.trim()
             : (lang === 'am' ? 'የተወሰደ (Takeaway)' : 'Takeaway');
 
         const formattedItems = cartItems.map((item) => ({
-            menuItemId: item._id || item.id,
+            menuItemId: item.id || item._id,
             name: (lang === 'am' ? item.nameAmharic : item.nameEnglish) || item.name || '',
             unitPrice: Number(item.price || 0),
             quantity: Number(item.qty || 1),
             notes: '',
         }));
 
-        const orderPayload = {
-            clientOrderId,
-            tableNumber: formattedTable,
-            waiterId: waiter._id,
-            items: formattedItems,
-            totalAmount: subtotal,
-            createdAt: new Date().toISOString(),
-        };
-
-        let rawReceipt = `\x1B\x40\x1B\x61\x01KITCHEN TICKET\nTable: ${formattedTable}\nWaiter: ${waiter.name}\nOrder: ${clientOrderId.slice(0, 8)}\n--------------------------------\n`;
-        formattedItems.forEach((i) => {
-            rawReceipt += `${i.quantity}x ${i.name} - ${i.unitPrice * i.quantity} ETB\n`;
-        });
-        rawReceipt += `--------------------------------\nTotal: ${subtotal} ETB\n\n\n\x1D\x56\x00`;
-
         try {
-            // Retrieve JWT Auth token
-            const token = await AsyncStorage.getItem('@auth_token');
-
-            // DIRECT MONGODB API POST with JWT Bearer Header
-            const apiRes = await fetch(`${API_BASE_URL}/api/orders`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`,
-                },
-                body: JSON.stringify(orderPayload),
+            // 1. Direct local SQLite transaction (synced = 0)
+            const success = createLocalOrder({
+                clientOrderId,
+                tableNumber: formattedTable,
+                waiterId: waiter._id,
+                items: formattedItems,
+                totalAmount: subtotal,
             });
 
-            if (!apiRes.ok) {
-                const errData = await apiRes.json();
-                console.warn('Direct API Order creation warning:', errData);
+            if (!success) {
+                throw new Error('Failed to insert order into SQLite');
             }
 
-            // Native SQLite queuing fallback for iOS / Android offline mode
-            if (Platform.OS !== 'web') {
-                try {
-                    const db = await getLocalDatabase();
-                    await db.execAsync('BEGIN IMMEDIATE;');
+            // 2. Format ESC/POS raw ticket & trigger local printing over LAN
+            let rawReceipt = `\x1B\x40\x1B\x61\x01KITCHEN TICKET\nTable: ${formattedTable}\nWaiter: ${waiter.name}\nOrder: ${clientOrderId.slice(0, 8)}\n--------------------------------\n`;
+            formattedItems.forEach((i) => {
+                rawReceipt += `${i.quantity}x ${i.name} - ${i.unitPrice * i.quantity} ETB\n`;
+            });
+            rawReceipt += `--------------------------------\nTotal: ${subtotal} ETB\n\n\n\x1D\x56\x00`;
 
-                    await db.runAsync(
-                        `INSERT INTO orders (client_order_id, status, total_amount, items_json, created_at)
-                         VALUES (?, ?, ?, ?, ?)`,
-                        [clientOrderId, 'SUBMITTED', subtotal, JSON.stringify(formattedItems), now]
-                    );
+            ClientPrinterService.printRawReceipt(rawReceipt).catch(() => { });
 
-                    await db.runAsync(
-                        `INSERT INTO print_queue (id, client_order_id, raw_esc_pos, print_status, retry_count, created_at)
-                         VALUES (?, ?, ?, ?, 0, ?)`,
-                        [`PRN-${clientOrderId}`, clientOrderId, rawReceipt, 'PENDING', now]
-                    );
-
-                    await db.execAsync('COMMIT;');
-                } catch (sqliteErr) {
-                    console.log('SQLite store error (operating online mode):', sqliteErr);
-                }
-            }
-
-            // 1. Clear cart
+            // 3. Clear cart & set success toast
             await AsyncStorage.removeItem('@active_cart');
-
-            // 2. Set Toast notification message for Home screen
             await AsyncStorage.setItem(
                 '@order_success_toast',
                 lang === 'am' ? '✅ ትእዛዙ በስኬት ተመዝግቧል!' : '✅ Order placed successfully!'
             );
 
-            // 3. Optional print trigger & background sync
-            ClientPrinterService.printRawReceipt(rawReceipt).catch(() => { });
+            // 4. Trigger background sync attempt
             triggerSyncEngine();
 
-            // 4. Redirect back to Home screen
-            router.replace('/home' as any);
+            // 5. Instantly redirect back to home
+            router.replace('/home');
         } catch (error: any) {
-            console.error('Order process error:', error);
+            console.error('Order placement error:', error);
             Alert.alert(
                 'Error',
                 lang === 'am' ? 'ትእዛዙን መዝገብ አልተቻለም' : 'Failed to save order'
@@ -219,7 +176,7 @@ export default function CheckoutScreen() {
 
                     <FlatList
                         data={cartItems}
-                        keyExtractor={(item) => item._id || item.id}
+                        keyExtractor={(item) => item.id || item._id}
                         renderItem={({ item }) => (
                             <View style={styles.itemRow}>
                                 <Text style={styles.itemName}>

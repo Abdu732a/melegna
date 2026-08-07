@@ -14,11 +14,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
-
-const API_BASE_URL =
-    process.env.EXPO_PUBLIC_API_BASE_URL;
-
-const MENU_CACHE_KEY = '@pos_menu_items_cache';
+import { getLocalMenu } from '../database/menuRepository';
 
 const CATEGORIES = [
     { key: 'ALL', am: 'ሁሉም', en: 'All' },
@@ -72,37 +68,21 @@ export default function TabletHomeScreen() {
         }
     };
 
-    const loadMenuData = async () => {
+    const loadMenuData = () => {
         try {
-            const cached = await AsyncStorage.getItem(MENU_CACHE_KEY);
-            if (cached) {
-                setMenuItems(JSON.parse(cached));
-                setLoading(false);
-            }
+            // Direct SQLite fetch
+            const items = getLocalMenu();
+            setMenuItems(items);
         } catch (e) {
-            console.error('Failed reading menu cache', e);
-        }
-        syncMenuFromDB();
-    };
-
-    const syncMenuFromDB = async () => {
-        try {
-            const res = await fetch(`${API_BASE_URL}/api/menu`);
-            const data = await res.json();
-
-            if (res.ok && Array.isArray(data)) {
-                await AsyncStorage.setItem(MENU_CACHE_KEY, JSON.stringify(data));
-                setMenuItems(data);
-            }
-        } catch (err) {
-            console.log('Operating offline. Using local cached menu.');
+            console.error('Failed reading SQLite menu', e);
         } finally {
             setLoading(false);
         }
     };
 
     const addToCart = (item: any) => {
-        setCart((prev) => ({ ...prev, [item._id]: (prev[item._id] || 0) + 1 }));
+        const id = item.id || item._id;
+        setCart((prev) => ({ ...prev, [id]: (prev[id] || 0) + 1 }));
     };
 
     const updateCartQty = (id: string, delta: number) => {
@@ -118,13 +98,11 @@ export default function TabletHomeScreen() {
         });
     };
 
-    // LOGOUT / LOCK SCREEN HANDLER
     const handleLockScreen = async () => {
         try {
             setCart({});
             setActiveWaiter(null);
             await AsyncStorage.multiRemove(['@active_cart', '@logged_in_user', '@auth_token']);
-
             router.replace('/');
         } catch (error) {
             console.error('Logout error:', error);
@@ -144,9 +122,9 @@ export default function TabletHomeScreen() {
     });
 
     const selectedCartItems = Object.keys(cart).map((id) => {
-        const item = menuItems.find((m) => m._id === id);
+        const item = menuItems.find((m) => (m.id || m._id) === id);
         return { ...item, qty: cart[id] };
-    }).filter((item) => item._id);
+    }).filter((item) => item.id || item._id);
 
     const subtotal = selectedCartItems.reduce(
         (sum, item) => sum + (item.price || 0) * (item.qty || 0),
@@ -198,10 +176,7 @@ export default function TabletHomeScreen() {
                         </Text>
                     </TouchableOpacity>
 
-                    <TouchableOpacity
-                        style={styles.lockBtn}
-                        onPress={handleLockScreen}
-                    >
+                    <TouchableOpacity style={styles.lockBtn} onPress={handleLockScreen}>
                         <Text style={styles.lockBtnText}>{lang === 'am' ? 'ዝጋ (LOGOUT)' : 'LOGOUT'}</Text>
                     </TouchableOpacity>
                 </View>
@@ -232,11 +207,12 @@ export default function TabletHomeScreen() {
                         <FlatList
                             key={isTablet ? 'tablet-grid-3' : 'mobile-grid-2'}
                             data={filteredItems}
-                            keyExtractor={(item) => item._id}
+                            keyExtractor={(item) => item.id || item._id}
                             numColumns={isTablet ? 3 : 2}
                             contentContainerStyle={styles.gridContainer}
                             renderItem={({ item }) => {
-                                const qty = cart[item._id] || 0;
+                                const itemId = item.id || item._id;
+                                const qty = cart[itemId] || 0;
                                 const title = (lang === 'am' ? item.nameAmharic : item.nameEnglish) || item.name || '';
                                 return (
                                     <TouchableOpacity
@@ -277,36 +253,39 @@ export default function TabletHomeScreen() {
 
                     <FlatList
                         data={selectedCartItems}
-                        keyExtractor={(item) => item._id}
+                        keyExtractor={(item) => item.id || item._id}
                         style={styles.cartList}
-                        renderItem={({ item }) => (
-                            <View style={styles.cartRow}>
-                                <View style={{ flex: 1 }}>
-                                    <Text style={styles.cartItemTitle}>
-                                        {(lang === 'am' ? item.nameAmharic : item.nameEnglish) || item.name || ''}
-                                    </Text>
-                                    <Text style={styles.cartItemPrice}>{item.price} ETB</Text>
+                        renderItem={({ item }) => {
+                            const itemId = item.id || item._id;
+                            return (
+                                <View style={styles.cartRow}>
+                                    <View style={{ flex: 1 }}>
+                                        <Text style={styles.cartItemTitle}>
+                                            {(lang === 'am' ? item.nameAmharic : item.nameEnglish) || item.name || ''}
+                                        </Text>
+                                        <Text style={styles.cartItemPrice}>{item.price} ETB</Text>
+                                    </View>
+
+                                    <View style={styles.counterGroup}>
+                                        <TouchableOpacity
+                                            style={styles.counterBtn}
+                                            onPress={() => updateCartQty(itemId, -1)}
+                                        >
+                                            <Text style={styles.counterBtnText}>-</Text>
+                                        </TouchableOpacity>
+
+                                        <Text style={styles.counterQty}>{item.qty}</Text>
+
+                                        <TouchableOpacity
+                                            style={styles.counterBtn}
+                                            onPress={() => updateCartQty(itemId, 1)}
+                                        >
+                                            <Text style={styles.counterBtnText}>+</Text>
+                                        </TouchableOpacity>
+                                    </View>
                                 </View>
-
-                                <View style={styles.counterGroup}>
-                                    <TouchableOpacity
-                                        style={styles.counterBtn}
-                                        onPress={() => updateCartQty(item._id, -1)}
-                                    >
-                                        <Text style={styles.counterBtnText}>-</Text>
-                                    </TouchableOpacity>
-
-                                    <Text style={styles.counterQty}>{item.qty}</Text>
-
-                                    <TouchableOpacity
-                                        style={styles.counterBtn}
-                                        onPress={() => updateCartQty(item._id, 1)}
-                                    >
-                                        <Text style={styles.counterBtnText}>+</Text>
-                                    </TouchableOpacity>
-                                </View>
-                            </View>
-                        )}
+                            );
+                        }}
                     />
 
                     <View style={styles.orderFooter}>

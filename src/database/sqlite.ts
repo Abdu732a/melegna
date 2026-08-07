@@ -1,8 +1,15 @@
 import * as SQLite from 'expo-sqlite';
+import { Platform } from 'react-native';
 
-const db = SQLite.openDatabaseSync('melegna_pos.db');
+// Instantiate SQLite synchronously only on native devices (iOS / Android)
+const db = Platform.OS !== 'web' ? SQLite.openDatabaseSync('melegna_pos.db') : null;
 
 export const initLocalDB = () => {
+  if (Platform.OS === 'web' || !db) {
+    console.warn('📦 SQLite database initialization skipped on Web platform.');
+    return;
+  }
+
   db.execSync(`
         PRAGMA journal_mode = WAL;
 

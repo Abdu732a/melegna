@@ -12,11 +12,9 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
+import { getLocalStaff } from '../database/staffRepository';
 
-const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL;
-
-const STORAGE_KEY = '@staff_list_cache';
+const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL;
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -46,7 +44,6 @@ export default function LoginScreen() {
       if (token && userStr) {
         const user = JSON.parse(userStr);
         if (user._id || user.id) {
-          // Expo router is case-sensitive and relies on filename
           router.replace('/home');
           return;
         }
@@ -57,50 +54,22 @@ export default function LoginScreen() {
     loadStaffData();
   };
 
-  const loadStaffData = async () => {
+  const loadStaffData = () => {
     try {
-      const cachedData = await AsyncStorage.getItem(STORAGE_KEY);
-      if (cachedData !== null) {
-        const parsed = JSON.parse(cachedData);
-        if (isMounted.current) {
-          setStaffList(parsed);
-          if (parsed.length > 0) setSelectedUser(parsed[0]);
-          setLoading(false);
-        }
+      const localStaff = getLocalStaff();
+      // Filter ONLY waiters (case-insensitive)
+      const waitersOnly = localStaff.filter(
+        (user) => (user.role || '').toLowerCase() === 'waiter'
+      );
+
+      if (isMounted.current) {
+        setStaffList(waitersOnly);
+        if (waitersOnly.length > 0) setSelectedUser(waitersOnly[0]);
       }
     } catch (e) {
-      console.error('Error reading local cache:', e);
-    }
-    syncStaffFromDB();
-  };
-
-  const syncStaffFromDB = async () => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/auth/staff`, {
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-
-      const data = await response.json();
-
-      if (response.ok && Array.isArray(data)) {
-        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-        if (isMounted.current) {
-          setStaffList(data);
-          if (data.length > 0 && !selectedUser) {
-            setSelectedUser(data[0]);
-          }
-        }
-      }
-    } catch (error) {
-      console.log('Operating in offline mode or request timed out.');
+      console.error('Error reading SQLite staff list:', e);
     } finally {
-      if (isMounted.current) {
-        setLoading(false);
-      }
+      if (isMounted.current) setLoading(false);
     }
   };
 
@@ -130,22 +99,19 @@ export default function LoginScreen() {
       return;
     }
 
-    // Add AbortController for PIN verification to prevent endless loading 
-    // if the server is unreachable.
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    setVerifying(true);
+    setErrorMessage(null);
+
+    const userId = selectedUser.id || selectedUser._id;
 
     try {
-      setVerifying(true);
-      setErrorMessage(null);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
 
       const response = await fetch(`${API_BASE_URL}/api/auth/verify-pin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: selectedUser._id || selectedUser.id,
-          pinCode: enteredPin,
-        }),
+        body: JSON.stringify({ userId, pinCode: enteredPin }),
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
@@ -153,36 +119,47 @@ export default function LoginScreen() {
       const result = await response.json();
 
       if (response.ok) {
-        const sessionUser = {
-          _id: selectedUser._id || selectedUser.id,
-          name: selectedUser.name,
-          role: selectedUser.role || 'waiter',
-        };
-
-        await AsyncStorage.setItem('@auth_token', result.token || 'auth_active');
-        await AsyncStorage.setItem('@logged_in_user', JSON.stringify(sessionUser));
-
-        if (isMounted.current) {
-          setPin('');
-          setVerifying(false);
-        }
-
-        // Ensure route strictly matches filename casing
-        router.replace('/home');
+        await completeLogin(result.token, selectedUser);
       } else {
-        if (isMounted.current) {
-          setErrorMessage(result.error || 'Invalid PIN code');
-          setPin('');
-          setVerifying(false);
-        }
+        setErrorMessage(result.error || 'Invalid PIN code');
+        resetPin();
       }
     } catch (error) {
-      clearTimeout(timeoutId);
-      if (isMounted.current) {
-        setErrorMessage('Authentication request failed. Check network connection.');
-        setPin('');
-        setVerifying(false);
+      console.log('API unreachable or network error. Checking offline fallback.');
+
+      // Local offline verification check against SQLite data
+      const localPin = selectedUser.pinCode || selectedUser.pin;
+
+      if (localPin && String(localPin) === String(enteredPin)) {
+        await completeLogin('offline_token', selectedUser);
+      } else {
+        setErrorMessage('Invalid PIN code');
+        resetPin();
       }
+    }
+  };
+
+  const completeLogin = async (token: string, user: any) => {
+    const sessionUser = {
+      _id: user.id || user._id,
+      name: user.name,
+      role: user.role || 'waiter',
+    };
+
+    await AsyncStorage.setItem('@auth_token', token);
+    await AsyncStorage.setItem('@logged_in_user', JSON.stringify(sessionUser));
+
+    if (isMounted.current) {
+      setPin('');
+      setVerifying(false);
+    }
+    router.replace('/home');
+  };
+
+  const resetPin = () => {
+    if (isMounted.current) {
+      setPin('');
+      setVerifying(false);
     }
   };
 
@@ -191,26 +168,28 @@ export default function LoginScreen() {
       <StatusBar barStyle="light-content" backgroundColor="#121418" />
 
       <View style={[styles.mainLayout, isTablet ? styles.rowLayout : styles.columnLayout]}>
-        <View style={[styles.leftPanel, isTablet ? { flex: 0.45 } : { paddingBottom: 10 }]}>
+        <View style={[styles.leftPanel, isTablet ? { flex: 0.5 } : { paddingBottom: 10 }]}>
           <View style={styles.logoContainer}>
             <Text style={styles.brandTitle}>
               MELEGNA<Text style={styles.brandAccent}>POS</Text>
             </Text>
-            <Text style={styles.brandSubtitle}>Select staff account & enter PIN</Text>
+            <Text style={styles.brandSubtitle}>Select waiter account & enter PIN</Text>
           </View>
 
-          <Text style={styles.sectionHeader}>ACTIVE STAFF</Text>
+          <Text style={styles.sectionHeader}>WAITERS</Text>
           <View style={styles.staffWrapper}>
             {loading && staffList.length === 0 ? (
               <ActivityIndicator size="small" color="#00C896" />
             ) : (
               <FlatList
-                horizontal
+                key="waiters-grid-2-cols"
                 data={staffList}
-                keyExtractor={(item) => item._id || item.id}
-                showsHorizontalScrollIndicator={false}
+                numColumns={2}
+                keyExtractor={(item) => item.id || item._id}
+                showsVerticalScrollIndicator={true}
+                columnWrapperStyle={styles.columnWrapper}
                 renderItem={({ item }) => {
-                  const isSelected = (selectedUser?._id || selectedUser?.id) === (item._id || item.id);
+                  const isSelected = (selectedUser?.id || selectedUser?._id) === (item.id || item._id);
                   return (
                     <TouchableOpacity
                       activeOpacity={0.7}
@@ -221,11 +200,11 @@ export default function LoginScreen() {
                         setErrorMessage(null);
                       }}
                     >
-                      <Text style={[styles.userName, isSelected && styles.userNameSelected]}>
+                      <Text
+                        numberOfLines={1}
+                        style={[styles.userName, isSelected && styles.userNameSelected]}
+                      >
                         {item.name}
-                      </Text>
-                      <Text style={[styles.userRole, isSelected && styles.userRoleSelected]}>
-                        {item.role}
                       </Text>
                     </TouchableOpacity>
                   );
@@ -235,13 +214,13 @@ export default function LoginScreen() {
           </View>
         </View>
 
-        <View style={[styles.rightPanel, isTablet ? { flex: 0.55 } : { flex: 1 }]}>
+        <View style={[styles.rightPanel, isTablet ? { flex: 0.5 } : { flex: 1 }]}>
           <View style={styles.errorContainer}>
             {errorMessage ? (
               <Text style={styles.errorText}>⚠️ {errorMessage}</Text>
             ) : (
               <Text style={styles.hintText}>
-                Logging in as: <Text style={styles.highlightText}>{selectedUser?.name || 'Select User'}</Text>
+                Logging in as: <Text style={styles.highlightText}>{selectedUser?.name || 'Select Waiter'}</Text>
               </Text>
             )}
           </View>
@@ -312,17 +291,23 @@ const styles = StyleSheet.create({
   brandTitle: { fontSize: 32, fontWeight: '800', color: '#FFFFFF', letterSpacing: 2 },
   brandAccent: { color: '#00C896' },
   brandSubtitle: { fontSize: 13, color: '#A0A5B1', marginTop: 4 },
-  sectionHeader: { color: '#7A8194', fontSize: 11, fontWeight: '800', letterSpacing: 1, marginBottom: 8 },
-  staffWrapper: { height: 75, justifyContent: 'center' },
+  sectionHeader: { color: '#7A8194', fontSize: 11, fontWeight: '800', letterSpacing: 1, marginBottom: 12 },
+  staffWrapper: { maxHeight: 320, width: '100%' },
+  columnWrapper: { justifyContent: 'space-between', marginBottom: 10 },
   userChip: {
-    backgroundColor: '#1E222B', borderRadius: 10, paddingVertical: 12, paddingHorizontal: 18,
-    marginRight: 10, borderWidth: 1.5, borderColor: '#2A2E39', alignItems: 'center', justifyContent: 'center', minWidth: 110,
+    width: '48.5%',
+    backgroundColor: '#1E222B',
+    borderRadius: 10,
+    paddingVertical: 16,
+    paddingHorizontal: 8,
+    borderWidth: 1.5,
+    borderColor: '#2A2E39',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   userChipSelected: { backgroundColor: '#1E2E2A', borderColor: '#00C896' },
-  userName: { fontSize: 14, fontWeight: '700', color: '#E0E6ED' },
+  userName: { fontSize: 13, fontWeight: '700', color: '#E0E6ED', textAlign: 'center' },
   userNameSelected: { color: '#00C896' },
-  userRole: { fontSize: 11, color: '#7A8194', marginTop: 2, textTransform: 'capitalize' },
-  userRoleSelected: { color: '#00C896', opacity: 0.8 },
   errorContainer: { minHeight: 36, justifyContent: 'center', alignItems: 'center', marginBottom: 12 },
   errorText: { color: '#FF4D4D', fontSize: 13, fontWeight: '600', textAlign: 'center' },
   hintText: { color: '#7A8194', fontSize: 13, fontWeight: '500' },

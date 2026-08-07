@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ActivityIndicator, View } from 'react-native';
+import { initLocalDB } from '../database/sqlite';
+import { startSyncEngine } from '../database/syncEngine';
 
 export default function RootLayout() {
     const [isReady, setIsReady] = useState<boolean>(false);
@@ -9,35 +11,35 @@ export default function RootLayout() {
     const router = useRouter();
 
     useEffect(() => {
+        // Initialize local SQLite tables and start background sync daemon
+        initLocalDB();
+        startSyncEngine();
+    }, []);
+
+    useEffect(() => {
         const handleRouteChange = async () => {
             try {
-                // Re-evaluate storage every time the route changes
                 const userStr = await AsyncStorage.getItem('@logged_in_user');
                 const token = await AsyncStorage.getItem('@auth_token');
 
                 const isAuth = !!(userStr && token);
                 const inAuthGroup = segments[0] === 'home' || segments[0] === 'checkout';
-
-                // Matches '/' (undefined) or '/index' depending on how Expo router parses it
-                const isAtLogin = !segments[0] || segments[0] === 'index';
+                const isAtLogin = !segments[0] || (segments[0] as string) === 'index';
 
                 if (!isAuth && inAuthGroup) {
-                    // Redirect unauthenticated user to Login screen
                     router.replace('/');
                 } else if (isAuth && isAtLogin) {
-                    // Redirect authenticated user to Home
                     router.replace('/home');
                 }
             } catch (e) {
-                console.error('Auth check failed in layout:', e);
+                console.error('Auth check error:', e);
             } finally {
-                // Clear the loading screen once the check is done
                 setIsReady(true);
             }
         };
 
         handleRouteChange();
-    }, [segments]); // Crucial: Re-run this check whenever the route path changes
+    }, [segments]);
 
     if (!isReady) {
         return (
