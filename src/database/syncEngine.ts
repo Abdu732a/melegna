@@ -1,144 +1,94 @@
-import { Platform } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
-import { getDB } from './sqlite';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { saveStaffToLocal } from './staffRepository';
+import { saveMenuToLocal } from './menuRepository';
+import { getPendingOrders, markOrderAsSynced } from './orderRepository';
 
-const API_BASE = process.env.EXPO_PUBLIC_API_BASE_URL || 'https://melegna.onrender.com';
-const SYNC_SECRET = process.env.EXPO_PUBLIC_POS_SYNC_SECRET || '';
+const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL;
+const POS_SYNC_SECRET = process.env.EXPO_PUBLIC_POS_SYNC_SECRET;
 
-/**
- * Pushes pending offline orders from 'local_orders' to Render API
- */
-export async function pushPendingOrders() {
-    if (Platform.OS === 'web') return;
-
-    const db = getDB();
-    if (!db) return;
-
-    try {
-        const pendingOrders = await db.getAllAsync<any>(
-            'SELECT * FROM local_orders WHERE synced = 0'
-        );
-
-        if (!pendingOrders || pendingOrders.length === 0) return;
-
-        for (const order of pendingOrders) {
-            try {
-                const payload = {
-                    ...order,
-                    items: typeof order.items === 'string' ? JSON.parse(order.items) : order.items,
-                };
-
-                const response = await fetch(`${API_BASE}/api/orders`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'x-pos-sync-secret': SYNC_SECRET,
-                    },
-                    body: JSON.stringify(payload),
-                });
-
-                if (response.ok) {
-                    await db.runAsync('UPDATE local_orders SET synced = 1 WHERE clientOrderId = ?', [
-                        order.clientOrderId,
-                    ]);
-                }
-            } catch (err) {
-                console.error(`[SyncEngine] Failed to send order #${order.clientOrderId}:`, err);
-                break;
-            }
-        }
-    } catch (err) {
-        console.error('[SyncEngine] Error querying pending orders:', err);
-    }
+interface LocalOrder {
+    clientOrderId: string;
+    tableNumber: string;
+    waiterId: string;
+    items: string; // JSON string representation
+    totalAmount: number;
 }
 
-/**
- * Pulls updated menu items and staff into 'local_menu' and 'local_users'
- */
-export async function pullBackendData() {
-    if (Platform.OS === 'web') return;
+let isSyncing = false;
 
-    const db = getDB();
-    if (!db) return;
-
-    try {
-        // 1. Fetch menu updates
-        const menuRes = await fetch(`${API_BASE}/api/menu`, {
-            headers: { 'x-pos-sync-secret': SYNC_SECRET },
-        });
-        if (menuRes.ok) {
-            const menuData = await menuRes.json();
-            for (const item of menuData) {
-                await db.runAsync(
-                    `INSERT INTO local_menu (id, nameAmharic, nameEnglish, category, price, imageUrl, isAvailable)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET
-             nameAmharic=excluded.nameAmharic,
-             nameEnglish=excluded.nameEnglish,
-             category=excluded.category,
-             price=excluded.price,
-             imageUrl=excluded.imageUrl,
-             isAvailable=excluded.isAvailable`,
-                    [
-                        item.id,
-                        item.nameAmharic || '',
-                        item.nameEnglish || item.name || '',
-                        item.category || '',
-                        item.price || 0,
-                        item.imageUrl || null,
-                        item.isAvailable ?? 1,
-                    ]
-                );
-            }
-        }
-
-        // 2. Fetch users/staff updates
-        const usersRes = await fetch(`${API_BASE}/api/staff`, {
-            headers: { 'x-pos-sync-secret': SYNC_SECRET },
-        });
-        if (usersRes.ok) {
-            const usersData = await usersRes.json();
-            for (const u of usersData) {
-                await db.runAsync(
-                    `INSERT INTO local_users (id, name, role, pinCodeHash, isActive)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET
-             name=excluded.name,
-             role=excluded.role,
-             pinCodeHash=excluded.pinCodeHash,
-             isActive=excluded.isActive`,
-                    [u.id, u.name, u.role, u.pinCodeHash || '', u.isActive ?? 1]
-                );
-            }
-        }
-    } catch (err) {
-        console.error('[SyncEngine] Error fetching backend data:', err);
-    }
-}
-
-export async function runFullSync() {
-    if (Platform.OS === 'web') return;
+const performSync = async (): Promise<void> => {
+    if (isSyncing) return;
 
     const netState = await NetInfo.fetch();
     if (!netState.isConnected) return;
 
-    await pushPendingOrders();
-    await pullBackendData();
-}
+    isSyncing = true;
 
-export function startSyncEngine() {
-    if (Platform.OS === 'web') return;
-
-    runFullSync();
-
-    NetInfo.addEventListener((state) => {
-        if (state.isConnected && state.isInternetReachable) {
-            runFullSync();
+    try {
+        // 1. Pull latest Menu & Staff from Backend
+        const menuRes = await fetch(`${API_BASE_URL}/api/menu`);
+        if (menuRes.ok) {
+            const menuData = await menuRes.json();
+            saveMenuToLocal(menuData);
         }
-    });
 
-    setInterval(() => {
-        runFullSync();
-    }, 30000);
+        const staffRes = await fetch(`${API_BASE_URL}/api/auth/staff`);
+        if (staffRes.ok) {
+            const staffData = await staffRes.json();
+            saveStaffToLocal(staffData);
+        }
 
-}
+        // 2. Push Pending Offline Orders to Backend
+        const pendingOrders = getPendingOrders() as LocalOrder[];
+        if (pendingOrders.length === 0) {
+            isSyncing = false;
+            return;
+        }
+
+        let token: string | null = await AsyncStorage.getItem('@auth_token');
+
+        // Fallback to POS_SYNC_SECRET if token is missing or set to 'offline_token'
+        if (!token || token === 'offline_token') {
+            // ስህተቱ እዚህ ላይ ተስተካክሏል (?? null ተጨምሯል)
+            token = POS_SYNC_SECRET ?? null;
+        }
+
+        for (const order of pendingOrders) {
+            const response = await fetch(`${API_BASE_URL}/api/orders`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    clientOrderId: order.clientOrderId,
+                    tableNumber: order.tableNumber,
+                    waiterId: order.waiterId,
+                    items: JSON.parse(order.items),
+                    totalAmount: order.totalAmount
+                })
+            });
+
+            if (response.ok) {
+                markOrderAsSynced(order.clientOrderId);
+                console.log(`Order synced successfully: ${order.clientOrderId}`);
+            } else {
+                console.error(`Failed to sync order ${order.clientOrderId}. Backend returned ${response.status}`);
+            }
+        }
+    } catch (error) {
+        console.log('Sync engine running offline or network interrupted.', error);
+    } finally {
+        isSyncing = false;
+    }
+};
+
+export const startSyncEngine = (): void => {
+    setInterval(performSync, 15000);
+};
+
+export const triggerSyncEngine = async (): Promise<void> => {
+    console.log("Manual sync triggered to push offline orders...");
+    await performSync();
+};

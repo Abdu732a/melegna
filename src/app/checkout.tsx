@@ -14,7 +14,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { createLocalOrder } from '../database/orderRepository';
-import { runFullSync as triggerSyncEngine } from '../database/syncEngine';
+import { triggerSyncEngine } from '../database/syncEngine';
 import { ClientPrinterService } from '../database/printerService';
 
 const generateUUID = () => {

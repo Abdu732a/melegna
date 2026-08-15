@@ -1,20 +1,10 @@
 import * as SQLite from 'expo-sqlite';
 import { Platform } from 'react-native';
 
-let dbInstance: SQLite.SQLiteDatabase | null = null;
-
-export const getDB = (): SQLite.SQLiteDatabase | null => {
-  if (Platform.OS === 'web') return null;
-
-  if (!dbInstance) {
-    dbInstance = SQLite.openDatabaseSync('melegna_pos.db');
-  }
-  return dbInstance;
-};
+// Instantiate SQLite synchronously only on native devices (iOS / Android)
+const db = Platform.OS !== 'web' ? SQLite.openDatabaseSync('melegna_pos.db') : null;
 
 export const initLocalDB = () => {
-  const db = getDB();
-
   if (Platform.OS === 'web' || !db) {
     console.warn('📦 SQLite database initialization skipped on Web platform.');
     return;
@@ -56,4 +46,4 @@ export const initLocalDB = () => {
   console.log('📦 Local SQLite database initialized successfully.');
 };
 
-export default getDB;
+export default db;
