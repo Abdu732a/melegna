@@ -2,7 +2,7 @@ const { User } = require('../models');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'melegna_default_secret_key';
+const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES_IN = '12h'; // POS session duration
 
 // Helper to generate SHA-256 PIN hash
