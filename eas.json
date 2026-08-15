@@ -1,0 +1,18 @@
+{
+    "cli": {
+        "version": ">= 10.0.0",
+        "appVersionSource": "local"
+    },
+    "build": {
+        "preview": {
+            "distribution": "internal",
+            "android": {
+                "buildType": "apk"
+            },
+            "env": {
+                "EXPO_PUBLIC_API_BASE_URL": "https://melegna.onrender.com",
+                "EXPO_PUBLIC_POS_SYNC_SECRET": "offline_pos_secret_key"
+            }
+        }
+    }
+}

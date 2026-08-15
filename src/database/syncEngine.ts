@@ -4,20 +4,26 @@ import { saveStaffToLocal } from './staffRepository';
 import { saveMenuToLocal } from './menuRepository';
 import { getPendingOrders, markOrderAsSynced } from './orderRepository';
 
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL;
+const API_BASE_URL: string = process.env.EXPO_PUBLIC_API_BASE_URL || 'http://192.168.1.100:5000';
+const POS_SYNC_SECRET: string = process.env.EXPO_PUBLIC_POS_SYNC_SECRET || 'offline_pos_secret_key';
 
 interface LocalOrder {
     clientOrderId: string;
     tableNumber: string;
     waiterId: string;
-    items: string; // JSON string
+    items: string; // JSON string representation
     totalAmount: number;
 }
 
-// Core sync logic separated so it can be triggered manually or via interval
-const performSync = async () => {
+let isSyncing = false;
+
+const performSync = async (): Promise<void> => {
+    if (isSyncing) return;
+
     const netState = await NetInfo.fetch();
     if (!netState.isConnected) return;
+
+    isSyncing = true;
 
     try {
         // 1. Pull latest Menu & Staff from Backend
@@ -35,9 +41,17 @@ const performSync = async () => {
 
         // 2. Push Pending Offline Orders to Backend
         const pendingOrders = getPendingOrders() as LocalOrder[];
-        if (pendingOrders.length === 0) return;
+        if (pendingOrders.length === 0) {
+            isSyncing = false;
+            return;
+        }
 
-        const token = await AsyncStorage.getItem('@auth_token');
+        let token: string | null = await AsyncStorage.getItem('@auth_token');
+
+        // Fallback to POS_SYNC_SECRET if token is missing or set to 'offline_token'
+        if (!token || token === 'offline_token') {
+            token = POS_SYNC_SECRET;
+        }
 
         for (const order of pendingOrders) {
             const response = await fetch(`${API_BASE_URL}/api/orders`, {
@@ -58,20 +72,22 @@ const performSync = async () => {
             if (response.ok) {
                 markOrderAsSynced(order.clientOrderId);
                 console.log(`Order synced successfully: ${order.clientOrderId}`);
+            } else {
+                console.error(`Failed to sync order ${order.clientOrderId}. Backend returned ${response.status}`);
             }
         }
     } catch (error) {
-        console.log('Sync engine running offline or network interrupted.');
+        console.log('Sync engine running offline or network interrupted.', error);
+    } finally {
+        isSyncing = false;
     }
 };
 
-export const startSyncEngine = () => {
-    // Run sync loop every 15 seconds if online
+export const startSyncEngine = (): void => {
     setInterval(performSync, 15000);
 };
 
-// Exported for use in checkout.tsx to force a sync immediately after ordering
-export const triggerSyncEngine = async () => {
+export const triggerSyncEngine = async (): Promise<void> => {
     console.log("Manual sync triggered to push offline orders...");
     await performSync();
 };
