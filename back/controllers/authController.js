@@ -17,7 +17,7 @@ exports.getActiveStaff = async (req, res) => {
         const page = Math.max(parseInt(req.query.page) || 1, 1);
 
         const staff = await User.find({ isActive: true })
-            .select('_id name role')
+            .select('_id name role pinCodeHash isActive')
             .limit(limit)
             .skip((page - 1) * limit)
             .lean();
@@ -64,6 +64,7 @@ exports.verifyPin = async (req, res) => {
                 id: user._id,
                 name: user.name,
                 role: user.role,
+                pinCodeHash: user.pinCodeHash,
             }
         });
     } catch (error) {
