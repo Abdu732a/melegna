@@ -1,7 +1,6 @@
 import * as SQLite from 'expo-sqlite';
 import { Platform } from 'react-native';
 
-// Instantiate SQLite synchronously only on native devices (iOS / Android)
 const db = Platform.OS !== 'web' ? SQLite.openDatabaseSync('melegna_pos.db') : null;
 
 export const initLocalDB = () => {
@@ -35,15 +34,31 @@ export const initLocalDB = () => {
             clientOrderId TEXT PRIMARY KEY,
             tableNumber TEXT NOT NULL,
             waiterId TEXT NOT NULL,
-            items TEXT NOT NULL, -- Stored as JSON string
+            items TEXT NOT NULL,
             totalAmount REAL NOT NULL,
             status TEXT DEFAULT 'SUBMITTED',
             isPaid INTEGER DEFAULT 0,
             paymentMethod TEXT DEFAULT 'NONE',
-            synced INTEGER DEFAULT 0 -- 0 = Pending sync to backend, 1 = Synced
+            synced INTEGER DEFAULT 0
         );
     `);
   console.log('📦 Local SQLite database initialized successfully.');
+};
+
+// Clear SQLite tables to verify fresh sync tests
+export const clearLocalSQLite = () => {
+  if (Platform.OS === 'web') {
+    localStorage.clear();
+    console.log('🌐 LocalStorage cleared.');
+    return;
+  }
+  if (!db) return;
+  db.execSync(`
+    DELETE FROM local_users;
+    DELETE FROM local_menu;
+    DELETE FROM local_orders;
+  `);
+  console.log('🧹 SQLite database wiped clean successfully.');
 };
 
 export default db;

@@ -8,7 +8,6 @@ export const createLocalOrder = (orderData: {
     items: any[];
     totalAmount: number;
 }) => {
-    // 🌐 WEB FALLBACK
     if (Platform.OS === 'web') {
         try {
             const existingOrders = JSON.parse(localStorage.getItem('@local_orders') || '[]');
@@ -22,7 +21,6 @@ export const createLocalOrder = (orderData: {
             };
             existingOrders.push(newOrder);
             localStorage.setItem('@local_orders', JSON.stringify(existingOrders));
-            console.log('🌐 Saved local order to localStorage.');
             return true;
         } catch (e) {
             console.error('Failed to save order to localStorage on web:', e);
@@ -30,7 +28,6 @@ export const createLocalOrder = (orderData: {
         }
     }
 
-    // 📱 NATIVE (Android/iOS)
     if (!db) return false;
 
     const statement = db.prepareSync(`
@@ -56,7 +53,6 @@ export const createLocalOrder = (orderData: {
 };
 
 export const getPendingOrders = (): any[] => {
-    // 🌐 WEB FALLBACK
     if (Platform.OS === 'web') {
         try {
             const orders = JSON.parse(localStorage.getItem('@local_orders') || '[]');
@@ -66,13 +62,11 @@ export const getPendingOrders = (): any[] => {
         }
     }
 
-    // 📱 NATIVE (Android/iOS)
     if (!db) return [];
     return db.getAllSync('SELECT * FROM local_orders WHERE synced = 0');
 };
 
 export const markOrderAsSynced = (clientOrderId: string) => {
-    // 🌐 WEB FALLBACK
     if (Platform.OS === 'web') {
         try {
             const orders = JSON.parse(localStorage.getItem('@local_orders') || '[]');
@@ -86,7 +80,36 @@ export const markOrderAsSynced = (clientOrderId: string) => {
         return;
     }
 
-    // 📱 NATIVE (Android/iOS)
     if (!db) return;
     db.runSync('UPDATE local_orders SET synced = 1 WHERE clientOrderId = ?', [clientOrderId]);
+};
+
+// NEW: Update status to IN_KITCHEN upon successful print
+export const updateOrderStatusToKitchen = (clientOrderId: string): boolean => {
+    if (Platform.OS === 'web') {
+        try {
+            const orders = JSON.parse(localStorage.getItem('@local_orders') || '[]');
+            const updated = orders.map((o: any) =>
+                o.clientOrderId === clientOrderId ? { ...o, status: 'IN_KITCHEN' } : o
+            );
+            localStorage.setItem('@local_orders', JSON.stringify(updated));
+            return true;
+        } catch (e) {
+            console.error('Failed to update status on web:', e);
+            return false;
+        }
+    }
+
+    if (!db) return false;
+
+    try {
+        db.runSync(
+            'UPDATE local_orders SET status = ? WHERE clientOrderId = ?',
+            ['IN_KITCHEN', clientOrderId]
+        );
+        return true;
+    } catch (error) {
+        console.error('Failed to update order status locally:', error);
+        return false;
+    }
 };

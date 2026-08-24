@@ -1,64 +1,126 @@
-import TcpSocket from 'react-native-tcp-socket';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { PermissionsAndroid, Platform } from 'react-native';
+import { NetPrinter, BLEPrinter, USBPrinter } from 'react-native-thermal-receipt-printer';
 
-// Replace with your actual local static IP for the cafe's thermal printer
-const PRINTER_IP = '192.168.1.100';
-const PRINTER_PORT = 9100;
+export interface PrinterConfig {
+    method: 'LAN' | 'BLUETOOTH' | 'USB';
+    address: string;
+    port?: number;
+}
+
+const PRINTER_STORAGE_KEY = '@restaurant_printer_config';
+
+const defaultConfig: PrinterConfig = {
+    method: 'LAN',
+    address: '192.168.1.100:9100',
+    port: 9100,
+};
+
+/**
+ * Ensures required Android runtime permissions are granted before calling 
+ * native Bluetooth/USB APIs to prevent SecurityException crashes on Android 12+.
+ */
+async function ensurePermissions(): Promise<boolean> {
+    if (Platform.OS !== 'android') return true;
+
+    try {
+        if (Platform.Version >= 31) {
+            const granted = await PermissionsAndroid.requestMultiple([
+                PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+                PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+            ]);
+
+            const isConnectGranted =
+                granted[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT] ===
+                PermissionsAndroid.RESULTS.GRANTED;
+            const isScanGranted =
+                granted[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN] ===
+                PermissionsAndroid.RESULTS.GRANTED;
+
+            return isConnectGranted && isScanGranted;
+        } else {
+            const granted = await PermissionsAndroid.request(
+                PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
+            );
+            return granted === PermissionsAndroid.RESULTS.GRANTED;
+        }
+    } catch (error) {
+        console.error('Failed to request printer permissions:', error);
+        return false;
+    }
+}
+
+export async function getPrinterSettings(): Promise<PrinterConfig> {
+    try {
+        const jsonValue = await AsyncStorage.getItem(PRINTER_STORAGE_KEY);
+        return jsonValue != null ? JSON.parse(jsonValue) : defaultConfig;
+    } catch (error) {
+        console.error('Failed to fetch printer settings from storage:', error);
+        return defaultConfig;
+    }
+}
+
+export async function savePrinterSettings(config: PrinterConfig): Promise<void> {
+    try {
+        const jsonValue = JSON.stringify(config);
+        await AsyncStorage.setItem(PRINTER_STORAGE_KEY, jsonValue);
+    } catch (error) {
+        console.error('Failed to save printer settings to storage:', error);
+    }
+}
+
+export async function connectAndPrint(
+    method: 'LAN' | 'BLUETOOTH' | 'USB',
+    address: string,
+    payload: string
+): Promise<void> {
+    try {
+        if (method === 'LAN') {
+            if (!address) {
+                throw new Error('Printer address is required for LAN connection.');
+            }
+
+            const [host, portStr] = address.split(':');
+            const port = portStr ? parseInt(portStr, 10) : 9100;
+
+            await NetPrinter.init();
+            await NetPrinter.connectPrinter(host, port);
+            await NetPrinter.printBill(payload);
+
+        } else if (method === 'BLUETOOTH') {
+            const hasPermission = await ensurePermissions();
+            if (!hasPermission) {
+                throw new Error('Bluetooth permission denied by user.');
+            }
+
+            if (!address) {
+                throw new Error('MAC address is required for Bluetooth connection.');
+            }
+
+            await BLEPrinter.init();
+            await BLEPrinter.connectPrinter(address);
+            await BLEPrinter.printBill(payload);
+
+        } else if (method === 'USB') {
+            const hasPermission = await ensurePermissions();
+            if (!hasPermission) {
+                throw new Error('USB hardware permission denied by user.');
+            }
+
+            const [vendorId, productId] = address.split(':');
+            await USBPrinter.init();
+            await USBPrinter.connectPrinter(vendorId || '', productId || '');
+            await USBPrinter.printBill(payload);
+        }
+    } catch (error) {
+        console.error(`Failed to execute printing via ${method}:`, error);
+        throw error;
+    }
+}
 
 export const ClientPrinterService = {
-    /**
-     * Prints a pre-formatted ESC/POS raw string (used in checkout.tsx)
-     */
-    printRawReceipt: (rawReceipt: string): Promise<boolean> => {
-        return new Promise((resolve) => {
-            console.log(`Attempting to connect to LAN printer at ${PRINTER_IP}:${PRINTER_PORT}...`);
-
-            const client = TcpSocket.createConnection({
-                host: PRINTER_IP,
-                port: PRINTER_PORT,
-            }, () => {
-                // Connection successful, write the raw ESC/POS payload
-                client.write(rawReceipt);
-                client.end();
-                resolve(true);
-            });
-
-            client.on('error', (error) => {
-                console.error('Local printer connection error:', error);
-                client.destroy();
-                resolve(false);
-            });
-
-            // Fallback timeout just in case the socket hangs
-            setTimeout(() => {
-                client.destroy();
-                resolve(false);
-            }, 5000);
-        });
+    async printRawReceipt(payload: string): Promise<void> {
+        const config = await getPrinterSettings();
+        await connectAndPrint(config.method, config.address, payload);
     },
-
-    /**
-     * Optional: Prints by accepting an object instead of a raw string. 
-     * Useful if you want to trigger custom prints outside of the checkout page.
-     */
-    printKitchenReceipt: (orderDetails: any): Promise<boolean> => {
-        const ESC = '\x1B';
-        const INIT = `${ESC}@`;
-        const CENTER = `${ESC}a\x01`;
-        const LEFT = `${ESC}a\x00`;
-        const CUT = '\x1D\x56\x41\x10';
-
-        let printData = `${INIT}${CENTER}=== KITCHEN ORDER ===\n`;
-        printData += `Table: ${orderDetails.tableNumber}\n`;
-        printData += `Order ID: ${orderDetails.clientOrderId}\n`;
-        printData += `--------------------------------\n${LEFT}`;
-
-        for (const item of orderDetails.items) {
-            printData += `${item.quantity}x ${item.name}\n`;
-            if (item.notes) printData += `   Note: ${item.notes}\n`;
-        }
-
-        printData += `--------------------------------\n\n${CUT}`;
-
-        return ClientPrinterService.printRawReceipt(printData);
-    }
 };

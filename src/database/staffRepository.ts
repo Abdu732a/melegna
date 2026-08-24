@@ -47,20 +47,33 @@ export const saveStaffToLocal = (staffList: any[]) => {
     );
 
     try {
+        let savedCount = 0;
         for (const user of staffList) {
-            // Ensure unique ID to prevent rows from overwriting each other
-            const userId = String(user._id || user.id || user.username || Math.random());
+            // Ensure unique ID, NEVER use Math.random() as a staff ID
+            const userId = String(user._id || user.id);
+            if (!userId || userId === 'undefined') {
+                console.error('Skipping staff member: Missing valid ID', user);
+                continue;
+            }
+
             const activeFlag = user.isActive === false ? 0 : 1;
+            const pinToSave = user.pinCodeHash || '';
+
+            if (!pinToSave) {
+                console.warn(`Skipping staff member ${userId} - Missing pinCodeHash which is required for offline login.`);
+                continue;
+            }
 
             statement.executeSync([
                 userId,
                 user.name || 'Unknown',
                 user.role || 'staff',
-                user.pinCodeHash || '',
+                pinToSave,
                 activeFlag
             ]);
+            savedCount++;
         }
-        console.log(`📱 Successfully saved ${staffList.length} staff members to SQLite.`);
+        console.log(`📱 Successfully saved ${savedCount} staff members to SQLite.`);
     } catch (error) {
         console.error('Error saving staff to SQLite:', error);
     } finally {
