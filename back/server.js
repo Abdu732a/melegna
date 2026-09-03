@@ -5,7 +5,6 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const timeout = require('express-timeout-handler');
 
 const app = express();
 
@@ -21,7 +20,7 @@ app.use(cors({
 
 app.use(express.json({ limit: '10kb' })); // Restrict payload size
 
-// Global Rate Limiter: Max 200 requests per 15 minutes per IP
+// Global Rate Limiter
 const globalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 200000,
@@ -31,30 +30,19 @@ const globalLimiter = rateLimit({
 });
 app.use('/api', globalLimiter);
 
-// 15-Second Request Timeout Handler
-app.use(timeout.handler({
-    timeout: 15000,
-    onTimeout: (req, res) => {
-        res.status(530).json({ error: 'Request timed out on the server.' });
-    },
-}));
-// Add this right before your app.use('/api/...', ...) routes
+// Root & Health Check Endpoints (Keep Render & UptimeRobot Alive)
 app.get('/', (req, res) => {
     res.status(200).send('Melegna POS API is running live!');
 });
 
 app.get('/api/health', (req, res) => {
-    res.status(200).json({ status: 'ok', timestamp: new Date() });
+    res.status(200).json({ status: 'OK', uptime: process.uptime(), timestamp: new Date() });
 });
-// Routes
-app.use('/api/auth', require('./routes/authRoutes'));
+
+// API Routes
+app.use('/api/auth', require('./routes/authRoutes')); // Auth handles staff/waiters
 app.use('/api/orders', require('./routes/orderRoutes'));
 app.use('/api/menu', require('./routes/menuRoutes'));
-
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-    res.status(200).json({ status: 'OK', uptime: process.uptime() });
-});
 
 // Global 404 Route Handler
 app.use((req, res) => {
@@ -77,9 +65,9 @@ if (!MONGO_URI) {
 }
 
 const mongooseOptions = {
-    maxPoolSize: 10, // Maintain up to 10 socket connections
-    serverSelectionTimeoutMS: 5000, // Keep trying to send operations for 5 seconds
-    socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
+    maxPoolSize: 10,
+    serverSelectionTimeoutMS: 10000, // Increased to 10s for Render cold start
+    socketTimeoutMS: 45000,
 };
 
 mongoose
