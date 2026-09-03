@@ -38,7 +38,14 @@ app.use(timeout.handler({
         res.status(530).json({ error: 'Request timed out on the server.' });
     },
 }));
+// Add this right before your app.use('/api/...', ...) routes
+app.get('/', (req, res) => {
+    res.status(200).send('Melegna POS API is running live!');
+});
 
+app.get('/api/health', (req, res) => {
+    res.status(200).json({ status: 'ok', timestamp: new Date() });
+});
 // Routes
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/orders', require('./routes/orderRoutes'));
