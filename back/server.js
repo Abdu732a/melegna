@@ -11,11 +11,11 @@ const app = express();
 // Security Headers
 app.use(helmet());
 
-// CORS Configuration
+// CORS Configuration (Updated to support custom device authentication headers)
 app.use(cors({
     origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-pos-sync-secret', 'x-device-id'],
 }));
 
 app.use(express.json({ limit: '10kb' })); // Restrict payload size
@@ -30,7 +30,7 @@ const globalLimiter = rateLimit({
 });
 app.use('/api', globalLimiter);
 
-// Root & Health Check Endpoints (Keep Render & UptimeRobot Alive)
+// Root & Health Check Endpoints
 app.get('/', (req, res) => {
     res.status(200).send('Melegna POS API is running live!');
 });
@@ -40,7 +40,8 @@ app.get('/api/health', (req, res) => {
 });
 
 // API Routes
-app.use('/api/auth', require('./routes/authRoutes')); // Auth handles staff/waiters
+app.use('/api/device', require('./routes/deviceRoutes')); // <--- Device Activation & Key Generation Route Added
+app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/orders', require('./routes/orderRoutes'));
 app.use('/api/menu', require('./routes/menuRoutes'));
 
@@ -66,7 +67,7 @@ if (!MONGO_URI) {
 
 const mongooseOptions = {
     maxPoolSize: 10,
-    serverSelectionTimeoutMS: 10000, // Increased to 10s for Render cold start
+    serverSelectionTimeoutMS: 10000,
     socketTimeoutMS: 45000,
 };
 
