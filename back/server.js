@@ -44,6 +44,7 @@ app.use('/api/device', require('./routes/deviceRoutes')); // <--- Device Activat
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/orders', require('./routes/orderRoutes'));
 app.use('/api/menu', require('./routes/menuRoutes'));
+app.use('/api/settings', require('./routes/settingRoutes'));
 
 // Global 404 Route Handler
 app.use((req, res) => {
