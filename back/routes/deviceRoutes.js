@@ -1,13 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const { Device } = require('../models');
+const verifyAdmin = require('../middleware/verifyAdmin');
 
 /**
  * @route   POST /api/device/generate-key
  * @desc    Admin endpoint to seed/create new license keys in MongoDB
- * @access  Private / Admin
+ * @access  Private / Admin Protected
  */
-router.post('/generate-key', async (req, res) => {
+router.post('/generate-key', verifyAdmin, async (req, res) => {
     const { keyString, deviceName } = req.body;
 
     if (!keyString) {
@@ -56,12 +57,11 @@ router.post('/activate', async (req, res) => {
             return res.status(404).json({ error: 'Invalid License Key.' });
         }
 
-        // Block if key is already bound to another physical hardware device ID
+        // Allow re-linking if app was re-installed on same hardware deviceId
         if (device.isActivated && device.deviceId !== deviceId) {
             return res.status(403).json({ error: 'This License Key is already bound to another device.' });
         }
 
-        // Activate and bind device
         device.isActivated = true;
         device.deviceId = deviceId;
         device.deviceName = deviceName || device.deviceName || 'POS Terminal';
@@ -71,7 +71,7 @@ router.post('/activate', async (req, res) => {
         return res.status(200).json({
             success: true,
             message: 'Device authorized successfully.',
-            posSyncSecret: process.env.POS_SYNC_SECRET // Sync signature token returned on success
+            posSyncSecret: process.env.POS_SYNC_SECRET
         });
     } catch (error) {
         return res.status(500).json({ error: 'Server error during activation.' });
