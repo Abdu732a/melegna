@@ -30,7 +30,7 @@ const authLimiter = rateLimit({
     message: { error: 'Too many authentication attempts, please try again later.' },
 });
 
-// Rate Limiters አተገባበር
+// Rate Limiters 
 app.use('/api', globalLimiter);
 app.use('/api/auth', authLimiter);
 app.use('/api/device', authLimiter);
